@@ -1,0 +1,6 @@
+*.frx binary
+*.mvba binary
+*.bas text eol=crlf
+*.cls text eol=crlf
+*.frm text eol=crlf
+
