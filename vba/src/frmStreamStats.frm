@@ -138,11 +138,11 @@ End Sub
 ' Log, status, messages
 '----------------------------------------------------------------------------------------------
 Public Sub AppendLog(ByVal s As String)
-    Dim t As String
+    Dim T As String
     On Error Resume Next
-    t = txtLog.text
-    If Len(t) > 30000 Then t = Mid$(t, Len(t) - 20000)
-    txtLog.text = t & Format$(Now, "hh:nn:ss") & "  " & s & vbCrLf
+    T = txtLog.text
+    If Len(T) > 30000 Then T = Mid$(T, Len(T) - 20000)
+    txtLog.text = T & Format$(Now, "hh:nn:ss") & "  " & s & vbCrLf
     txtLog.SelStart = Len(txtLog.text)
 End Sub
 
@@ -297,12 +297,12 @@ Private Sub cboZone_Change()
 End Sub
 
 Private Function ReadCOverride(ByRef ok As Boolean) As Double
-    Dim t As String, v As Double
+    Dim T As String, v As Double
     ok = True
-    t = Trim$(Replace(txtCOverride.text, ",", "."))
-    If Len(t) = 0 Then Exit Function
-    v = Val(t)
-    If Not IsNumeric(t) Or v <= 0# Or v > 1# Then
+    T = Trim$(Replace(txtCOverride.text, ",", "."))
+    If Len(T) = 0 Then Exit Function
+    v = Val(T)
+    If Not IsNumeric(T) Or v <= 0# Or v > 1# Then
         ok = False
         Notify "Rational C override must be a number between 0 and 1 (or blank).", vbExclamation
         Exit Function
@@ -445,7 +445,7 @@ End Sub
 Public Sub AddCsvFile(ByVal path As String)
     ' CSV rows: ID, X/Lon, Y/Lat. A header row is skipped; lat,lon order is detected for US data;
     ' values outside the lat/lon range are treated as DGN master units.
-    Dim fnum As Integer, ln As String, parts() As String, a As Double, b As Double, t As Double, n As Long
+    Dim fnum As Integer, ln As String, parts() As String, a As Double, b As Double, T As Double, n As Long
     Dim sa As String, sb As String
     On Error GoTo Bad
     fnum = FreeFile
@@ -460,9 +460,9 @@ Public Sub AddCsvFile(ByVal path As String)
                 a = Val(sa)
                 b = Val(sb)
                 If Abs(a) <= 90# And Abs(b) <= 180# And a > 0# And b < 0# Then
-                    t = a
+                    T = a
                     a = b
-                    b = t
+                    b = T
                 End If
                 If Abs(a) <= 180# And Abs(b) <= 90# Then
                     AddQueueItem Trim$(parts(0)), "WGS84_LonLat", a, b
@@ -549,7 +549,7 @@ End Sub
 
 Public Sub RunBatch(ByVal failedOnly As Boolean)
     Dim i As Long, total As Long, done As Long, okCount As Long, failCount As Long
-    Dim it As Object, res As Object, lon As Double, lat As Double, cOk As Boolean, t0 As Single
+    Dim it As Object, res As Object, lon As Double, lat As Double, cOk As Boolean, t0 As Single, warn As String
     If mBusy Then Exit Sub
     If mQueue.Count = 0 Then
         Notify "Add culvert points before running the batch.", vbExclamation
@@ -616,8 +616,67 @@ Public Sub RunBatch(ByVal failedOnly As Boolean)
         If gAutoGis Then AutoSaveGis "Batch_Watersheds", mQueue, gStreams
         mpTabs.Value = 2
     End If
-    If Not gSilent Then MsgBox IIf(gCancel, "Batch stopped.", "Batch complete.") & vbCrLf & vbCrLf & okCount & " delineated, " & failCount & " failed.", vbInformation, "USGS StreamStats VDOT (VBA)"
+    warn = CheckBatchResults()
+    If Not gSilent Then
+        If Len(warn) > 0 Then
+            MsgBox IIf(gCancel, "Batch stopped.", "Batch complete.") & vbCrLf & vbCrLf & okCount & " delineated, " & failCount & " failed." & _
+                   vbCrLf & vbCrLf & "CHECK THESE CULVERTS:" & vbCrLf & warn, vbExclamation, "USGS StreamStats VDOT (VBA)"
+        Else
+            MsgBox IIf(gCancel, "Batch stopped.", "Batch complete.") & vbCrLf & vbCrLf & okCount & " delineated, " & failCount & " failed.", vbInformation, "USGS StreamStats VDOT (VBA)"
+        End If
+    End If
 End Sub
+
+Private Function CheckBatchResults() As String
+    ' Flags culverts that StreamStats snapped to the same outlet as another culvert (their rows are copies)
+    ' and drainage areas under 1 acre (the point is probably off the stream). Logs each warning, marks the
+    ' queue row, and returns the warning text ("" when everything looks right).
+    Const SMALL_BASIN_ACRES As Double = 1#
+    Dim i As Long, j As Long, k As Variant, s As Variant, ids As String, w As String, n As Long
+    Dim seen As Object, res As Object
+    Set seen = CreateObject("Scripting.Dictionary")
+    For i = 1 To mQueue.Count
+        If HasResult(i) Then
+            Set res = mQueue(i)("res")
+            k = Format$(CDbl(res("s_lon")), "0.000000") & "," & Format$(CDbl(res("s_lat")), "0.000000")
+            If Not seen.Exists(k) Then seen(k) = CStr(i) Else seen(k) = seen(k) & "," & CStr(i)
+        End If
+    Next i
+    For Each k In seen.keys
+        If InStr(seen(k), ",") > 0 Then
+            ids = ""
+            n = 0
+            For Each s In Split(seen(k), ",")
+                j = CLng(s)
+                ids = ids & IIf(n > 0, ", ", "") & CStr(mQueue(j)("id"))
+                SetItemStatus j, "Check: shared outlet"
+                n = n + 1
+            Next s
+            w = w & vbCrLf & "- " & ids & " snapped to the same StreamStats outlet, so they share one drainage area and identical flows. " & _
+                "Move each culvert onto its own stream and re-run." & vbCrLf
+        End If
+    Next k
+    For i = 1 To mQueue.Count
+        If HasResult(i) Then
+            Set res = mQueue(i)("res")
+            If CDbl(res("acres")) < SMALL_BASIN_ACRES Then
+                w = w & vbCrLf & "- " & CStr(mQueue(i)("id")) & " drainage area is only " & Format$(CDbl(res("acres")), "0.00") & _
+                    " ac. The point is probably off the stream channel. Move it onto the stream and re-run." & vbCrLf
+                If mQueue(i)("status") = "Check: shared outlet" Then
+                    SetItemStatus i, "Check: shared outlet, tiny area"
+                Else
+                    SetItemStatus i, "Check: tiny area"
+                End If
+            End If
+        End If
+    Next i
+    If Len(w) > 0 Then
+        For Each s In Split(Mid$(w, 3), vbCrLf & vbCrLf)
+            AppendLog "WARNING: " & Mid$(Replace(s, vbCrLf, ""), 3)
+        Next s
+    End If
+    CheckBatchResults = w
+End Function
 
 Private Function DrawOne(ByVal idx As Long) As Boolean
     ' Draws the drainage area (once) and, when wanted, the markers for one culvert.
@@ -917,7 +976,7 @@ End Sub
 
 Private Sub ApplyMethodSettings()
     ' Pushes the method choices to the calculator (used by the next delineation) and remembers them.
-    Dim t As String, v As Double
+    Dim T As String, v As Double
     If mLoading Then Exit Sub
     gUseRational = CBool(chkMRational.Value)
     gUseNrcs = CBool(chkMNrcs.Value)
@@ -947,15 +1006,15 @@ Private Sub ApplyMethodSettings()
         Case Else
             gDesign = "auto"
     End Select
-    t = Trim$(Replace(txtCN.text, ",", "."))
+    T = Trim$(Replace(txtCN.text, ",", "."))
     gCN = 0#
-    If Len(t) = 0 Then
+    If Len(T) = 0 Then
         lblCnNote.Caption = "CN is estimated for each basin from NLCD 2021 land cover and the soil group."
     Else
-        v = Val(t)
-        If IsNumeric(t) And v >= 30# And v <= 98# Then
+        v = Val(T)
+        If IsNumeric(T) And v >= 30# And v <= 98# Then
             gCN = v
-            lblCnNote.Caption = "CN " & t & " is used for every culvert."
+            lblCnNote.Caption = "CN " & T & " is used for every culvert."
         Else
             lblCnNote.Caption = "Enter a curve number from 30 to 98, or leave blank to estimate it."
         End If
@@ -981,7 +1040,7 @@ Private Sub ApplyMethodSettings()
     SaveSetting REG_APP, "Methods", "AndersonType", gAndersonType
     SaveSetting REG_APP, "Methods", "UseRanges", IIf(gUseRanges, "1", "0")
     SaveSetting REG_APP, "Methods", "Design", gDesign
-    SaveSetting REG_APP, "Methods", "CN", IIf(gCN > 0#, t, "")
+    SaveSetting REG_APP, "Methods", "CN", IIf(gCN > 0#, T, "")
     SaveSetting REG_APP, "Methods", "Hsg", gHsg
 End Sub
 
@@ -1407,10 +1466,4 @@ Failed:
     AppendLog "[GIS Export Error] " & Err.Description
     Notify Err.Description, vbCritical
 End Sub
-
-
-
-
-
-
 

@@ -7036,14 +7036,56 @@ class StreamStatsFenceDialog:
         self._auto_save_gis("Batch_Watersheds", done_items)
         self._refresh_results(select=done_items[0]["culvert_id"])
 
+        warnings = self._check_batch_results(done_items)
         n_fail = len(self.batch_queue) - len(done_items)
-        self.status_var.set(f"Batch complete \u2013 {len(done_items)} ok, {n_fail} failed/skipped")
-        messagebox.showinfo(
-            "Batch Complete",
-            f"Delineated {len(done_items)} of {len(self.batch_queue)} culvert(s)."
-            + (f"\n\nReports saved to:\n{report_dir}" if report_dir else ""),
-            parent=self.root,
-        )
+        self.status_var.set(f"Batch complete \u2013 {len(done_items)} ok, {n_fail} failed/skipped"
+                            + (f", {len(warnings)} warning(s)" if warnings else ""))
+        msg = (f"Delineated {len(done_items)} of {len(self.batch_queue)} culvert(s)."
+               + (f"\n\nReports saved to:\n{report_dir}" if report_dir else ""))
+        if warnings:
+            messagebox.showwarning(
+                "Batch Complete \u2013 Check Results",
+                msg + "\n\nCHECK THESE CULVERTS:\n\n\u2022 " + "\n\n\u2022 ".join(warnings),
+                parent=self.root,
+            )
+        else:
+            messagebox.showinfo("Batch Complete", msg, parent=self.root)
+
+    SMALL_BASIN_ACRES = 1.0
+
+    def _check_batch_results(self, done_items):
+        """Flags culverts that StreamStats snapped to the same outlet as another culvert (their rows are copies)
+        and drainage areas under SMALL_BASIN_ACRES (the point is probably off the stream). Logs each warning,
+        marks the batch row, and returns the warning texts."""
+        warnings = []
+        by_outlet = {}
+        for it in done_items:
+            sp = it["ss_result"].get("snapped_point") or (None, None)
+            if sp[0] is None:
+                continue
+            by_outlet.setdefault((round(sp[0], 6), round(sp[1], 6)), []).append(it)
+        flagged = {}
+        for group in by_outlet.values():
+            if len(group) < 2:
+                continue
+            ids = [g["culvert_id"] for g in group]
+            warnings.append(f"{', '.join(ids)} snapped to the same StreamStats outlet, so they share one drainage "
+                            f"area and identical flows. Move each culvert onto its own stream and re-run.")
+            for g in group:
+                flagged[g["culvert_id"]] = (g, "Check: shared outlet")
+        for it in done_items:
+            met = (it["ss_result"].get("vdot_comparison") or {}).get("metrics", {})
+            ac = met.get("drnarea_acres")
+            if ac is not None and ac < self.SMALL_BASIN_ACRES:
+                warnings.append(f"{it['culvert_id']} drainage area is only {ac:.2f} ac. The point is probably "
+                                f"off the stream channel. Move it onto the stream and re-run.")
+                prev = flagged.get(it["culvert_id"])
+                flagged[it["culvert_id"]] = (it, (prev[1] + ", tiny area") if prev else "Check: tiny area")
+        for it, text in flagged.values():
+            self._set_batch_status(it, text, "warn")
+        for w in warnings:
+            self.log_message("WARNING: " + w, "warn")
+        return warnings
 
     # =====================================================================
     # Results tab
