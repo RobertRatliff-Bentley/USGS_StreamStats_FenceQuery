@@ -272,18 +272,19 @@ Public Sub PlaceBatchTables(ByRef queue As Collection, ByVal tx As Double, ByVal
 
     Set rows = New Collection
     rows.Add Array("CULVERT ID", "DRAINAGE (AC)", "SLOPE (FT/MI)", "Q10 (CFS)", "Q25 (CFS)", "Q50 (CFS)", "Q100 (CFS)", _
-                   "GOVERNING METHOD", "BASIN DATA", "RAINFALL")
+                   "GOVERNING METHOD", "BASIN DATA", "RAINFALL", "WARNINGS")
     For Each it In queue
         n = n + 1
         If it("res") Is Nothing Then
-            rows.Add Array(CStr(it("id")), "FAILED", "-", "-", "-", "-", "-", "Error", "-", "-")
+            rows.Add Array(CStr(it("id")), "FAILED", "-", "-", "-", "-", "-", "Error", "-", "-", "DELINEATION FAILED")
         Else
             Set res = it("res")
             qD = res("q_des")
             qB = res("q_urban")
             rows.Add Array(CStr(it("id")), Format$(res("acres"), "#,##0.0"), Format$(res("slope"), "#,##0.0"), _
                            Format$(qD(2), "#,##0.0"), Format$(qD(3), "#,##0.0"), Format$(qD(4), "#,##0.0"), Format$(qD(5), "#,##0.0"), _
-                           CStr(res("gov")), IIf(res("have_bc"), "STREAMSTATS", "ALTERNATE"), IIf(res("have_atlas"), "ATLAS 14", "BUILT-IN"))
+                           CStr(res("gov")), IIf(res("have_bc"), "STREAMSTATS", "ALTERNATE"), IIf(res("have_atlas"), "ATLAS 14", "BUILT-IN"), _
+                           IIf(Len(CStr(it("warning"))) > 0, CStr(it("warning")), "-"))
             qA = res("q_and")
             If res("have_bc") Then anyBc = True Else anyAlt = True
             If res("have_nlcd") Then anyNlcd = True
@@ -325,6 +326,8 @@ Public Sub PlaceBatchTables(ByRef queue As Collection, ByVal tx As Double, ByVal
     rows.Add Array("ALTERNATE", "BASIN DATA", "StreamStats down: NLCD 2021 land cover, 3DEP slope, polygon area")
     rows.Add Array("ATLAS 14", "RAINFALL", "NOAA Atlas 14 intensity at the pour point")
     rows.Add Array("BUILT-IN", "RAINFALL", "Statewide IDF coefficients (placeholder) - verify before design")
+    rows.Add Array("SHARED OUTLET", "WARNINGS", "Same outlet as another culvert - rows are copies; move onto its own stream and re-run")
+    rows.Add Array("AREA < 1 AC", "WARNINGS", "Drainage area under 1 acre - point is probably off the stream; move it and re-run")
     ReDim colors(0 To rows.Count - 1)
     ReDim syms(0 To rows.Count - 1)
     For i = 0 To rows.Count - 1
@@ -342,6 +345,8 @@ Public Sub PlaceBatchTables(ByRef queue As Collection, ByVal tx As Double, ByVal
     colors(6) = 5
     colors(13) = 4
     colors(15) = 4
+    colors(16) = 4
+    colors(17) = 4
     bottom = BuildTable(rows, tx, bottom - 2# * th, "LEGEND", th, syms, colors, 6# * th)
 
     ' Data sources actually used by this batch
@@ -415,7 +420,7 @@ Public Function ExportBatchCsv(ByRef queue As Collection) As String
               "Q10 Rational (cfs),Q10 NRCS (cfs),Q10 Urban (cfs)," & _
               "Q10 VDOT (cfs),Q25 VDOT (cfs),Q50 VDOT (cfs),Q100 VDOT (cfs),Governing Method,Exit Lon,Exit Lat," & _
               "Basin Data Source,Rainfall Source,Curve Number,Curve Number Source,Percent Urban," & _
-              "Q10 Anderson (cfs),Tc Length (ft),Tc Length Source,Longest Flowpath (ft),Longest Flowpath Method,Soil Source"
+              "Q10 Anderson (cfs),Tc Length (ft),Tc Length Source,Longest Flowpath (ft),Longest Flowpath Method,Soil Source,Warnings"
     For Each it In queue
         If it("res") Is Nothing Then
             Print #f, CsvQ(CStr(it("id"))) & ",FAILED"
@@ -437,7 +442,8 @@ Public Function ExportBatchCsv(ByRef queue As Collection) As String
                       IIf(res("cn") > 0#, NumFix(res("cn"), 1), "") & "," & CsvQ(CStr(res("cn_src"))) & "," & _
                       IIf(res("urban_pct") >= 0#, NumFix(res("urban_pct"), 1), "") & "," & _
                       QTxt(res("q_and")(2)) & "," & IIf(res("tc_len") > 0#, NumFix(res("tc_len"), 1), "") & "," & CStr(res("tc_len_src")) & "," & _
-                      IIf(res("lfp_ft") > 0#, NumFix(res("lfp_ft"), 1), "") & "," & CsvQ(CStr(res("lfp_method"))) & "," & CsvQ(CStr(res("hsg_src")))
+                      IIf(res("lfp_ft") > 0#, NumFix(res("lfp_ft"), 1), "") & "," & CsvQ(CStr(res("lfp_method"))) & "," & CsvQ(CStr(res("hsg_src"))) & "," & _
+                      CsvQ(CStr(it("warning")))
         End If
     Next it
     Close #f
@@ -616,3 +622,4 @@ Private Function XmlEsc(ByVal s As String) As String
     s = Replace(s, ">", "&gt;")
     XmlEsc = s
 End Function
+

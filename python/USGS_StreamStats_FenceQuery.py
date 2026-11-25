@@ -4281,14 +4281,14 @@ class MicroStationDgnManager:
         model_ref = ISessionMgr.ActiveDgnModelRef
         rows = [
             ("CULVERT ID", "DRAINAGE (AC)", "SLOPE (FT/MI)", "Q10 (CFS)", "Q25 (CFS)", "Q50 (CFS)", "Q100 (CFS)",
-             "GOVERNING METHOD", "BASIN DATA", "RAINFALL")
+             "GOVERNING METHOD", "BASIN DATA", "RAINFALL", "WARNINGS")
         ]
         f = self._fmt_num
         for item in batch_results:
             cid = item.get("culvert_id", "")
             ssr = item.get("ss_result")
             if not ssr:
-                rows.append((cid, "FAILED", "-", "-", "-", "-", "-", "Error", "-", "-"))
+                rows.append((cid, "FAILED", "-", "-", "-", "-", "-", "Error", "-", "-", "DELINEATION FAILED"))
                 continue
             vcomp = ssr.get("vdot_comparison", {})
             met = vcomp.get("metrics", {})
@@ -4297,9 +4297,11 @@ class MicroStationDgnManager:
             rows.append((cid, f(met.get("drnarea_acres", 0.0), 1), f(met.get("slope_ft_mi", 0.0), 1), *qs,
                          vcomp.get("governing_method", "") or "-",
                          "ALTERNATE" if "Alternate" in str(vcomp.get("basin_source", "")) else "STREAMSTATS",
-                         "ATLAS 14" if str(vcomp.get("rainfall_source", "")).startswith("NOAA") else "BUILT-IN"))
+                         "ATLAS 14" if str(vcomp.get("rainfall_source", "")).startswith("NOAA") else "BUILT-IN",
+                         item.get("warning") or "-"))
 
-        widths = [110.0, 100.0, 100.0, 85.0, 85.0, 85.0, 95.0, 180.0, 100.0, 90.0]
+        warn_w = max(110.0, 6.0 * max(len(r[-1]) for r in rows) + 16.0)
+        widths = [110.0, 100.0, 100.0, 85.0, 85.0, 85.0, 95.0, 180.0, 100.0, 90.0, warn_w]
         title = (f"BATCH CULVERT HYDROLOGY SUMMARY  \u2013  VDOT design peak flows  "
                  f"({len(batch_results)} culverts, {datetime.date.today():%Y-%m-%d})")
         th = self.table_text_height(batch_results)
@@ -4390,6 +4392,10 @@ class MicroStationDgnManager:
             ("ATLAS 14", "RAINFALL", "NOAA Atlas 14 intensity at the pour point", None, None),
             ("BUILT-IN", "RAINFALL", "Statewide IDF coefficients (placeholder) \u2013 verify before design",
              None, 4),
+            ("SHARED OUTLET", "WARNINGS", "Snapped to the same outlet as another culvert \u2013 rows are copies; "
+             "move the culvert onto its own stream and re-run", None, 4),
+            ("AREA < 1 AC", "WARNINGS", "Drainage area under 1 acre \u2013 point is probably off the stream; "
+             "move it onto the stream and re-run", None, 4),
         ]
         rows = [("SYMBOL", "FEATURE", "DESCRIPTION")]
         symbols, colors = {}, {}
@@ -4860,13 +4866,13 @@ class BatchSummaryExporter:
                 "Q2 USGS (cfs)", "Q10 USGS (cfs)", "Q25 USGS (cfs)", "Q50 USGS (cfs)", "Q100 USGS (cfs)",
                 "Q10 VDOT (cfs)", "Q25 VDOT (cfs)", "Q50 VDOT (cfs)", "Q100 VDOT (cfs)",
                 "Governing Method", "Exit Lon", "Exit Lat",
-                "Basin Data Source", "Rainfall Source", "Tc Length Source", "Regression Source"
+                "Basin Data Source", "Rainfall Source", "Tc Length Source", "Regression Source", "Warnings"
             ])
             for item in batch_results:
                 cid = item.get("culvert_id", "")
                 ssr = item.get("ss_result")
                 if not ssr:
-                    writer.writerow([cid, "FAILED"] + [""] * 21)
+                    writer.writerow([cid, "FAILED"] + [""] * 21 + ["DELINEATION FAILED"])
                     continue
                 vcomp = ssr.get("vdot_comparison", {})
                 met = vcomp.get("metrics", {})
@@ -4883,6 +4889,7 @@ class BatchSummaryExporter:
                     ssr["snapped_point"][0], ssr["snapped_point"][1],
                     vcomp.get("basin_source", ""), vcomp.get("rainfall_source", ""),
                     vcomp.get("tc_length_source", ""), vcomp.get("regression_source", ""),
+                    item.get("warning", ""),
                 ])
 
         if HAS_OPENPYXL:
@@ -4900,9 +4907,10 @@ class BatchSummaryExporter:
                 "Culvert ID", "Status", "Drainage (ac)", "Slope (ft/mi)", "VDOT C", "Tc (min)",
                 "Q10 USGS", "Q25 USGS", "Q50 USGS", "Q100 USGS",
                 "Q10 VDOT", "Q25 VDOT", "Q50 VDOT", "Q100 VDOT", "Governing Method",
-                "Basin Data Source", "Rainfall Source", "Tc Length Source", "Regression Source"
+                "Basin Data Source", "Rainfall Source", "Tc Length Source", "Regression Source", "Warnings"
             ]
             ws.append(headers)
+            warn_fill = PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid")
             for c in range(1, len(headers) + 1):
                 cell = ws.cell(row=ws.max_row, column=c)
                 cell.fill = h_fill
@@ -4927,7 +4935,11 @@ class BatchSummaryExporter:
                     vcomp.get("governing_method", ""),
                     vcomp.get("basin_source", ""), vcomp.get("rainfall_source", ""),
                     vcomp.get("tc_length_source", ""), vcomp.get("regression_source", ""),
+                    item.get("warning", ""),
                 ])
+                if item.get("warning"):
+                    for c in range(1, len(headers) + 1):
+                        ws.cell(row=ws.max_row, column=c).fill = warn_fill
 
             for col in ws.columns:
                 max_l = max(len(str(c.value or "")) for c in col)
@@ -7010,6 +7022,7 @@ class StreamStatsFenceDialog:
             self.log_message("Batch finished with no successful delineations.", "error")
             return
 
+        warnings = self._check_batch_results(done_items)
         try:
             if self.batch_table_origin_uor:
                 tx, ty = self.batch_table_origin_uor[0], self.batch_table_origin_uor[1]
@@ -7036,7 +7049,6 @@ class StreamStatsFenceDialog:
         self._auto_save_gis("Batch_Watersheds", done_items)
         self._refresh_results(select=done_items[0]["culvert_id"])
 
-        warnings = self._check_batch_results(done_items)
         n_fail = len(self.batch_queue) - len(done_items)
         self.status_var.set(f"Batch complete \u2013 {len(done_items)} ok, {n_fail} failed/skipped"
                             + (f", {len(warnings)} warning(s)" if warnings else ""))
@@ -7056,10 +7068,11 @@ class StreamStatsFenceDialog:
     def _check_batch_results(self, done_items):
         """Flags culverts that StreamStats snapped to the same outlet as another culvert (their rows are copies)
         and drainage areas under SMALL_BASIN_ACRES (the point is probably off the stream). Logs each warning,
-        marks the batch row, and returns the warning texts."""
+        marks the batch row, stores a short `item["warning"]` for the summary table, and returns the warning texts."""
         warnings = []
         by_outlet = {}
         for it in done_items:
+            it["warning"] = ""
             sp = it["ss_result"].get("snapped_point") or (None, None)
             if sp[0] is None:
                 continue
@@ -7073,6 +7086,7 @@ class StreamStatsFenceDialog:
                             f"area and identical flows. Move each culvert onto its own stream and re-run.")
             for g in group:
                 flagged[g["culvert_id"]] = (g, "Check: shared outlet")
+                g["warning"] = "SHARED OUTLET w/ " + ", ".join(i for i in ids if i != g["culvert_id"])
         for it in done_items:
             met = (it["ss_result"].get("vdot_comparison") or {}).get("metrics", {})
             ac = met.get("drnarea_acres")
@@ -7081,6 +7095,7 @@ class StreamStatsFenceDialog:
                                 f"off the stream channel. Move it onto the stream and re-run.")
                 prev = flagged.get(it["culvert_id"])
                 flagged[it["culvert_id"]] = (it, (prev[1] + ", tiny area") if prev else "Check: tiny area")
+                it["warning"] = "; ".join(w for w in (it["warning"], "AREA < 1 AC \u2013 OFF STREAM?") if w)
         for it, text in flagged.values():
             self._set_batch_status(it, text, "warn")
         for w in warnings:
