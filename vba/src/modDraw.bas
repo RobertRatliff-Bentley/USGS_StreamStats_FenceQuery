@@ -127,14 +127,14 @@ End Sub
 
 Public Sub AddTextRot(ByVal s As String, ByVal x As Double, ByVal y As Double, ByVal th As Double, ByVal angleRad As Double, _
                       ByVal lvl As Level, ByVal colorIndex As Long)
-    Dim t As TextElement, wasOn As Boolean
+    Dim T As TextElement, wasOn As Boolean
     wasOn = ActiveSettings.AnnotationScaleEnabled
     On Error GoTo Restore
     ActiveSettings.AnnotationScaleEnabled = False
-    Set t = CreateTextElement1(Nothing, s, Point3dFromXY(x, y), Matrix3dFromAxisAndRotationAngle(2, angleRad))
-    t.TextStyle.Height = th
-    t.TextStyle.Width = th
-    AddStyled t, lvl, colorIndex, 1
+    Set T = CreateTextElement1(Nothing, s, Point3dFromXY(x, y), Matrix3dFromAxisAndRotationAngle(2, angleRad))
+    T.TextStyle.Height = th
+    T.TextStyle.Width = th
+    AddStyled T, lvl, colorIndex, 1
 Restore:
     ActiveSettings.AnnotationScaleEnabled = wasOn
 End Sub
@@ -427,13 +427,24 @@ End Sub
 Public Sub DrawFlowpath(ByRef res As Object)
     Dim lfp As Collection, xs() As Double, ys() As Double, n As Long, lvl As Level, el As Element
     Dim vals As Object, bearing As Double, dirTxt As String, i As Long, nseg As Long, seg As Long, items As Long
-    Dim first As Variant, last As Variant, lengthFt As Double
+    Dim first As Variant, last As Variant, lengthFt As Double, lx As Double, ly As Double, hx As Double, hy As Double
     If Not res.Exists("lfp") Then Exit Sub
     If res("lfp") Is Nothing Then Exit Sub
     Set lfp = res("lfp")
     n = ProjectLine(lfp, xs, ys)
     If n < 2 Then Exit Sub
     Set lvl = EnsureLevel("USGS_Longest_Flowpath", 5, 3)
+    lx = xs(0): hx = xs(0): ly = ys(0): hy = ys(0)
+    For i = 1 To IIf(n - 1 > 4000, 4000, n - 1)
+        If xs(i) < lx Then lx = xs(i)
+        If xs(i) > hx Then hx = xs(i)
+        If ys(i) < ly Then ly = ys(i)
+        If ys(i) > hy Then hy = ys(i)
+    Next i
+    If Len(ExistingAt("USGS_Longest_Flowpath", msdElementTypeLineString, lx, ly, hx, hy, False)) > 0 Then
+        LogLine "  Longest flowpath for " & CStr(res("culvert_id")) & " is already in the DGN; not drawn again."
+        Exit Sub
+    End If
     lengthFt = CDbl(res("lfp_ft"))
     dirTxt = BearingText(xs, ys, n, bearing)
     Set first = lfp(1)
@@ -677,3 +688,4 @@ Public Sub PlaceRaindropTable(ByRef res As Object, ByVal traceId As String, ByVa
 Bad:
     LogLine "  Raindrop table skipped (" & Err.Description & ")"
 End Sub
+

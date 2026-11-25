@@ -679,12 +679,20 @@ Public Sub DrawMarkers(ByVal ix As Double, ByVal iy As Double, ByVal px As Doubl
     ' Culvert inlet (square with an X) at ix, iy and pour point (circle with crosshairs) at px, py.
     ' Sizes follow the Settings drawing scale, like the Python tool.
     Dim th As Double, u As Double, h As Double, rad As Double
-    Dim lvlI As Level, lvlP As Level, pts(0 To 4) As Point3d, el As Element
+    Dim lvlI As Level, lvlP As Level, pts(0 To 4) As Point3d, el As Element, inDone As Boolean, ppDone As Boolean
     th = TextHeightFt()
     u = th / 4#
     Set lvlI = EnsureLevel("USGS_Culvert_Inlet", 6, 2)
     Set lvlP = EnsureLevel("USGS_StreamStats_Point", 2, 3)
     h = 1.6 * u
+    rad = 2.5 * u
+    inDone = Len(ExistingAt("USGS_Culvert_Inlet", msdElementTypeShape, ix, iy, 0#, 0#, True)) > 0
+    ppDone = Len(ExistingAt("USGS_StreamStats_Point", msdElementTypeEllipse, px, py, 0#, 0#, True)) > 0
+    If inDone And ppDone Then
+        LogLine "  Markers for " & culvertId & " are already in the DGN; not drawn again."
+        Exit Sub
+    End If
+    If Not inDone Then
     pts(0) = Point3dFromXY(ix - h, iy - h)
     pts(1) = Point3dFromXY(ix + h, iy - h)
     pts(2) = Point3dFromXY(ix + h, iy + h)
@@ -695,7 +703,8 @@ Public Sub DrawMarkers(ByVal ix As Double, ByVal iy As Double, ByVal px As Doubl
     AddLine ix - h, iy - h, ix + h, iy + h, lvlI, 6, 1
     AddLine ix + h, iy - h, ix - h, iy + h, lvlI, 6, 1
     AddText culvertId & " INLET  E " & Format$(ix, "#,##0.0") & "  N " & Format$(iy, "#,##0.0"), ix + 4# * u, iy - 1.5 * th, th, lvlI, 6
-    rad = 2.5 * u
+    End If
+    If ppDone Then Exit Sub
     Set el = CreateEllipseElement2(Nothing, Point3dFromXY(px, py), rad, rad, Matrix3dIdentity, msdFillModeNotFilled)
     AddStyled el, lvlP, 2, 3
     AddLine px - 1.5 * rad, py, px + 1.5 * rad, py, lvlP, 2, 1
@@ -718,18 +727,49 @@ Public Sub AddLine(ByVal x1 As Double, ByVal y1 As Double, ByVal x2 As Double, B
     AddStyled el, lvl, colorIndex, weight
 End Sub
 
+Public Function ExistingAt(ByVal levelName As String, ByVal elType As Long, ByVal lx As Double, ByVal ly As Double, _
+                           ByVal hx As Double, ByVal hy As Double, ByVal centreOnly As Boolean) As String
+    ' Element ID of an element of elType on levelName that already covers the same extent (or, with centreOnly,
+    ' is centred on the same point), within 0.5 master unit. "" when none. Prevents drawing the same drainage
+    ' area, flowpath or marker twice when culverts snap to the same outlet or a batch is re-run.
+    Dim lvl As Level, sc As New ElementScanCriteria, ee As ElementEnumerator, r As Range3d, tol As Double
+    tol = 0.5
+    On Error Resume Next
+    Set lvl = ActiveDesignFile.Levels.Find(levelName, Nothing)
+    On Error GoTo 0
+    If lvl Is Nothing Then Exit Function
+    sc.ExcludeAllLevels
+    sc.IncludeLevel lvl
+    sc.ExcludeAllTypes
+    sc.IncludeType elType
+    Set ee = ActiveModelReference.Scan(sc)
+    Do While ee.MoveNext
+        r = ee.Current.Range
+        If centreOnly Then
+            If Abs((r.Low.x + r.High.x) / 2# - lx) <= tol And Abs((r.Low.y + r.High.y) / 2# - ly) <= tol Then
+                ExistingAt = DLongToString(ee.Current.id)
+                Exit Function
+            End If
+        ElseIf Abs(r.Low.x - lx) <= tol And Abs(r.Low.y - ly) <= tol And _
+               Abs(r.High.x - hx) <= tol And Abs(r.High.y - hy) <= tol Then
+            ExistingAt = DLongToString(ee.Current.id)
+            Exit Function
+        End If
+    Loop
+End Function
+
 Public Sub AddText(ByVal s As String, ByVal x As Double, ByVal y As Double, ByVal th As Double, _
                     ByVal lvl As Level, ByVal colorIndex As Long)
     ' Annotation scale is switched off while the text is created; otherwise a model with annotation
     ' scale on multiplies the height by its scale factor.
-    Dim t As TextElement, wasOn As Boolean
+    Dim T As TextElement, wasOn As Boolean
     wasOn = ActiveSettings.AnnotationScaleEnabled
     On Error GoTo Restore
     ActiveSettings.AnnotationScaleEnabled = False
-    Set t = CreateTextElement1(Nothing, s, Point3dFromXY(x, y), Matrix3dIdentity)
-    t.TextStyle.Height = th
-    t.TextStyle.Width = th
-    AddStyled t, lvl, colorIndex, 0
+    Set T = CreateTextElement1(Nothing, s, Point3dFromXY(x, y), Matrix3dIdentity)
+    T.TextStyle.Height = th
+    T.TextStyle.Width = th
+    AddStyled T, lvl, colorIndex, 0
 Restore:
     ActiveSettings.AnnotationScaleEnabled = wasOn
     If Err.Number <> 0 Then LogLine "  [WARNING] Label '" & s & "' could not be placed: " & Err.Description
@@ -1084,7 +1124,7 @@ NoAtlas:
 End Function
 
 Public Function AtlasIntensity(ByRef atlas() As Double, ByVal yr As Long, ByVal tcMin As Double) As Double
-    Dim durs As Variant, aris As Variant, col As Long, i As Long, t As Double, f As Double
+    Dim durs As Variant, aris As Variant, col As Long, i As Long, T As Double, f As Double
     AtlasIntensity = -1#
     durs = Array(5#, 10#, 15#, 30#, 60#, 120#, 180#, 360#, 720#, 1440#)
     aris = Array(1, 2, 5, 10, 25, 50, 100, 200, 500, 1000)
@@ -1093,11 +1133,11 @@ Public Function AtlasIntensity(ByRef atlas() As Double, ByVal yr As Long, ByVal 
         If aris(i) = yr Then col = i
     Next i
     If col < 0 Then Exit Function
-    t = MinD(MaxD(tcMin, durs(0)), durs(9))
+    T = MinD(MaxD(tcMin, durs(0)), durs(9))
     For i = 0 To 8
-        If t >= durs(i) And t <= durs(i + 1) Then
+        If T >= durs(i) And T <= durs(i + 1) Then
             If atlas(i, col) <= 0# Or atlas(i + 1, col) <= 0# Then Exit Function
-            f = (Log(t) - Log(durs(i))) / (Log(durs(i + 1)) - Log(durs(i)))
+            f = (Log(T) - Log(durs(i))) / (Log(durs(i + 1)) - Log(durs(i)))
             AtlasIntensity = Exp(Log(atlas(i, col)) + f * (Log(atlas(i + 1, col)) - Log(atlas(i, col))))
             Exit Function
         End If
@@ -1142,7 +1182,8 @@ End Function
 Private Sub DrawBasin(ByRef rings As Collection, ByRef vals As Object, ByRef src As Object)
     Dim lvl As Level, ring As Variant, pts() As Point3d, el As ShapeElement
     Dim n As Long, stepN As Long, i As Long, k As Long, m As Long, x As Double, y As Double
-    Dim idx As Long, drawn As Long
+    Dim idx As Long, drawn As Long, existing As Long, oldId As String
+    Dim lx As Double, ly As Double, hx As Double, hy As Double, j As Long
     Set lvl = EnsureLevel(LEVEL_BASIN, 3, 2)
     idx = 0
     For Each ring In rings
@@ -1162,6 +1203,19 @@ Private Sub DrawBasin(ByRef rings As Collection, ByRef vals As Object, ByRef src
             Next i
             If k >= 3 Then
                 If k < m Then ReDim Preserve pts(0 To k - 1)
+                lx = pts(0).x: hx = pts(0).x: ly = pts(0).y: hy = pts(0).y
+                For j = 1 To k - 1
+                    If pts(j).x < lx Then lx = pts(j).x
+                    If pts(j).x > hx Then hx = pts(j).x
+                    If pts(j).y < ly Then ly = pts(j).y
+                    If pts(j).y > hy Then hy = pts(j).y
+                Next j
+                oldId = ExistingAt(LEVEL_BASIN, msdElementTypeShape, lx, ly, hx, hy, False)
+            End If
+            If k >= 3 And Len(oldId) > 0 Then
+                existing = existing + 1
+                If idx = 0 Then mLastElementId = oldId
+            ElseIf k >= 3 Then
                 Set el = CreateShapeElement1(Nothing, pts, msdFillModeNotFilled)
                 Set el.Level = lvl
                 el.Color = 3
@@ -1178,7 +1232,9 @@ Private Sub DrawBasin(ByRef rings As Collection, ByRef vals As Object, ByRef src
         End If
         idx = idx + 1
     Next ring
-    LogLine "Drew " & drawn & " drainage-area boundary element(s) on level '" & LEVEL_BASIN & "' (element ID " & mLastElementId & ")."
+    If existing > 0 Then LogLine "Drainage area is already in the DGN (same outlet as an earlier culvert or run; element ID " & _
+                                 mLastElementId & "); not drawn again."
+    If drawn > 0 Then LogLine "Drew " & drawn & " drainage-area boundary element(s) on level '" & LEVEL_BASIN & "' (element ID " & mLastElementId & ")."
 End Sub
 
 Private Sub SetDashedStyle(ByVal el As Element)
@@ -1358,7 +1414,7 @@ End Sub
 
 Private Sub XYToLonLat(ByVal x As Double, ByVal y As Double, ByRef lon As Double, ByRef lat As Double)
     Dim f As Double, e As Double, d As Double, dx As Double, dy As Double
-    Dim rho As Double, t As Double, theta As Double, phi As Double, i As Long
+    Dim rho As Double, T As Double, theta As Double, phi As Double, i As Long
     If Not mLccReady Then LccInit GetZone()
     d = Pi() / 180#
     f = 1# / GRS80_INVF
@@ -1367,11 +1423,11 @@ Private Sub XYToLonLat(ByVal x As Double, ByVal y As Double, ByRef lon As Double
     dy = mLccRho0 - (y / FT_PER_M - mLccFN)
     rho = Sqr(dx * dx + dy * dy)
     If mLccN < 0# Then rho = -rho
-    t = (rho / (GRS80_A * mLccF)) ^ (1# / mLccN)
+    T = (rho / (GRS80_A * mLccF)) ^ (1# / mLccN)
     theta = Atn(dx / dy)
-    phi = Pi() / 2# - 2# * Atn(t)
+    phi = Pi() / 2# - 2# * Atn(T)
     For i = 1 To 8
-        phi = Pi() / 2# - 2# * Atn(t * (((1# - e * Sin(phi)) / (1# + e * Sin(phi))) ^ (e / 2#)))
+        phi = Pi() / 2# - 2# * Atn(T * (((1# - e * Sin(phi)) / (1# + e * Sin(phi))) ^ (e / 2#)))
     Next i
     lon = (theta / mLccN + mLccLon0) / d
     lat = phi / d
@@ -1759,3 +1815,4 @@ Public Sub LogLine(ByVal s As String)
     Print #f, Format$(Now, "yyyy-mm-dd hh:nn:ss") & "  " & s
     Close #f
 End Sub
+

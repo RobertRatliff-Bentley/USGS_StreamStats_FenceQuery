@@ -3502,6 +3502,53 @@ class MicroStationDgnManager:
                 pass
         return found
 
+    def _existing_ranges(self, level_name, elem_type=None):
+        """(low.x, low.y, high.x, high.y) in UORs of each element already on `level_name` (optionally
+        only `elem_type`). Used to avoid drawing the same drainage area, flowpath or marker twice."""
+        out = []
+        if not IN_MICROSTATION:
+            return out
+        try:
+            h = ISessionMgr.ActiveDgnFile.GetLevelCache().GetLevelByName(level_name)
+            if not h.IsValid():
+                return out
+            lvl = h.GetLevelId()
+        except Exception:
+            return out
+        for ref in ISessionMgr.ActiveDgnModelRef.GetDgnModel().GetGraphicElements():
+            try:
+                eh = ElementHandle(ref)
+                if ElementPropertiesGetter(eh).GetLevel() != lvl:
+                    continue
+                if elem_type is not None and eh.GetElementType() != elem_type:
+                    continue
+                cv = ICurvePathQuery.ElementToCurveVector(eh)
+                if cv is None:
+                    continue
+                r = DRange3d()
+                cv.GetRange(r)
+                out.append((r.low.x, r.low.y, r.high.x, r.high.y))
+            except Exception:
+                pass
+        return out
+
+    def _already_drawn(self, level_name, pts_uor, elem_type=None):
+        """True when an element on `level_name` already covers the same extent as `pts_uor` (within 0.5 master unit)."""
+        if not pts_uor:
+            return False
+        xs = [p[0] for p in pts_uor]
+        ys = [p[1] for p in pts_uor]
+        box = (min(xs), min(ys), max(xs), max(ys))
+        tol = 0.5 * self.projector.uor_per_master
+        return any(all(abs(a - b) <= tol for a, b in zip(box, r))
+                   for r in self._existing_ranges(level_name, elem_type))
+
+    def _marker_at(self, level_name, x, y, elem_type):
+        """True when a marker element of `elem_type` on `level_name` is already centred on (x, y)."""
+        tol = 0.5 * self.projector.uor_per_master
+        return any(abs((r[0] + r[2]) / 2 - x) <= tol and abs((r[1] + r[3]) / 2 - y) <= tol
+                   for r in self._existing_ranges(level_name, elem_type))
+
     def delete_all_tool_elements(self):
         """Deletes everything this tool drew (all elements on its levels) and clears the active fence."""
         n = self.delete_elements(self.find_tool_elements())
@@ -3608,11 +3655,18 @@ class MicroStationDgnManager:
         i_cfg = self.LEVEL_CONFIG["USGS_Culvert_Inlet"]
         u = self.annot_unit(self.basin_extent_uor(ss_result))
         px, py, pz = self.projector.wgs84_to_uor(plon, plat)
-        self.place_pour_point_marker(DPoint3d(px, py, pz), model_ref, lvl_ids.get("USGS_StreamStats_Point"),
-                                     p_cfg["color"], label=f"{culvert_id} PP" if culvert_id else "", unit=u)
         ix, iy, iz = self.projector.wgs84_to_uor(qlon, qlat)
-        self.place_culvert_inlet_marker(DPoint3d(ix, iy, iz), model_ref, lvl_ids.get("USGS_Culvert_Inlet"),
-                                        i_cfg["color"], label=f"{culvert_id} INLET" if culvert_id else "", unit=u)
+        pp_exists = self._marker_at("USGS_StreamStats_Point", px, py, 15)
+        in_exists = self._marker_at("USGS_Culvert_Inlet", ix, iy, 6)
+        if pp_exists and in_exists:
+            self.log(f"  Markers for {culvert_id or 'culvert'} are already in the DGN; not drawn again.")
+            return 1
+        if not pp_exists:
+            self.place_pour_point_marker(DPoint3d(px, py, pz), model_ref, lvl_ids.get("USGS_StreamStats_Point"),
+                                         p_cfg["color"], label=f"{culvert_id} PP" if culvert_id else "", unit=u)
+        if not in_exists:
+            self.place_culvert_inlet_marker(DPoint3d(ix, iy, iz), model_ref, lvl_ids.get("USGS_Culvert_Inlet"),
+                                            i_cfg["color"], label=f"{culvert_id} INLET" if culvert_id else "", unit=u)
         self.log(f"  Drew pour-point & culvert-inlet markers for {culvert_id or 'culvert'}.")
         return 1
 
@@ -3628,6 +3682,9 @@ class MicroStationDgnManager:
         lvl_ids = self.ensure_levels_exist()
         cfg = self.LEVEL_CONFIG["USGS_Longest_Flowpath"]
         pts = [self.projector.wgs84_to_uor(lon, lat) for lon, lat in path]
+        if self._already_drawn("USGS_Longest_Flowpath", pts[:4001]):
+            self.log(f"  Longest flowpath for {culvert_id or 'culvert'} is already in the DGN; not drawn again.")
+            return True
         step = 4000
         starts = list(range(0, len(pts) - 1, step))
         n_items = 0
@@ -4168,6 +4225,7 @@ class MicroStationDgnManager:
         basin_lvl = lvl_ids.get("USGS_StreamStats_Basin")
         b_cfg = self.LEVEL_CONFIG["USGS_StreamStats_Basin"]
         drawn = 0
+        existing = 0
         for ring_idx, ring in enumerate(ss_result.get("basin_rings_wgs84", [])):
             if len(ring) > self.MAX_SHAPE_VERTICES:
                 n0 = len(ring)
@@ -4175,10 +4233,15 @@ class MicroStationDgnManager:
                 self.log(f"  Simplified basin ring {ring_idx + 1}: {n0} -> {len(ring)} vertices.")
             _trace(f"draw_basin_rings ring={ring_idx} pts={len(ring)}")
             dpts = DPoint3dArray()
+            uor = []
             for lon, lat in ring:
                 xu, yu, zu = self.projector.wgs84_to_uor(lon, lat)
                 dpts.append(DPoint3d(xu, yu, zu))
+                uor.append((xu, yu))
             if len(dpts) < 3:
+                continue
+            if self._already_drawn("USGS_StreamStats_Basin", uor, 6):
+                existing += 1
                 continue
             eeh = EditElementHandle()
             if ShapeHandler.CreateShapeElement(eeh, None, dpts, model_ref.Is3d(), model_ref) == BentleyStatus.eSUCCESS:
@@ -4188,10 +4251,13 @@ class MicroStationDgnManager:
                 if ring_idx == 0:
                     self.attach_basin_item_type(eeh, ss_result, culvert_id)
                     self.attach_sources_item_type(eeh, ss_result, culvert_id)
-        if drawn:
+        if existing:
+            self.log(f"  Drainage area for {culvert_id or 'culvert'} is already in the DGN "
+                     f"(same outlet as an earlier culvert or run); not drawn again.")
+        if drawn or existing:
             ss_result["_dgn_basin_drawn"] = True
             self.ref_extent_uor = max(self.ref_extent_uor, self.basin_extent_uor(ss_result))
-        return drawn
+        return drawn + existing
 
     @staticmethod
     def _fmt_num(v, dec=1, unit=""):
