@@ -12,6 +12,15 @@ The tool comes in two versions with the same features and layout:
 | VBA | v1.0.1 | `vba/USGS_StreamStats_VDOT.mvba` (source in `vba/src/`) |
 
 ## Install
+The easiest way:
+
+1. Download `USGS_StreamStats_FenceQuery_Setup_v2.2.0.zip` from Releases and unzip it.
+2. Close MicroStation.
+3. Double-click `Install.bat`.
+
+It installs the Python libraries offline and copies both tools to your Macros folder. The installer source is in `installer/`.
+
+Manual install:
 Copy the files to your MicroStation macros folder, for example `...\WorkSets\<WorkSet>\Standards\Macros\`.
 
 - **Python:** key in `python load "<path>\USGS_StreamStats_FenceQuery.py"`. These packages are optional: `pyproj`, `shapely`, `openpyxl` (Excel export).
